@@ -29,11 +29,17 @@ function Warn    { param($t) Write-Host ("  [!!] " + $t) -ForegroundColor Red }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+$script:sigCache = @{}
 function Get-Sig {
   param($Path)
   if (-not $Path) { return 'NOPATH' }
-  if (-not (Test-Path -LiteralPath $Path)) { return 'MISSING' }
-  try { return (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString() } catch { return 'ERR' }
+  $key = ("$Path").ToLower()
+  if ($script:sigCache.ContainsKey($key)) { return $script:sigCache[$key] }
+  $r = 'ERR'
+  if (-not (Test-Path -LiteralPath $Path)) { $r = 'MISSING' }
+  else { try { $r = (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString() } catch { $r = 'ERR' } }
+  $script:sigCache[$key] = $r
+  return $r
 }
 
 # --- keyword databases (lower-case, matched case-insensitively) ---
@@ -54,27 +60,20 @@ $macroKeywords = @(
   'key presser','autofire','auto fire','rapid fire','double clicker','autoclicker','auto clicker','macro'
 )
 
+$script:cheatRx = [regex]::new('(?i)(' + (($cheatKeywords | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')')
+$script:macroRx = [regex]::new('(?i)(' + (($macroKeywords | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')')
+
 function Test-Kw {
   param($text)
   if (-not $text) { return $null }
-  $t = ("$text").ToLower()
-  foreach ($k in $cheatKeywords) { if ($t.Contains($k)) { return $k } }
-  return $null
+  $m = $script:cheatRx.Match("$text")
+  if ($m.Success) { return $m.Value.ToLower() } else { return $null }
 }
 function Test-MacroKw {
   param($text)
   if (-not $text) { return $null }
-  $t = ("$text").ToLower()
-  foreach ($k in $macroKeywords) { if ($t.Contains($k)) { return $k } }
-  return $null
-}
-function Scan-Dir {
-  param($Root, [int]$Depth = 3)
-  if (-not (Test-Path -LiteralPath $Root)) { return }
-  Get-ChildItem -LiteralPath $Root -Recurse -Depth $Depth -File -ErrorAction SilentlyContinue | ForEach-Object {
-    $m = Test-Kw $_.FullName
-    if ($m) { [pscustomobject]@{ Path = $_.FullName; Match = $m; Modified = $_.LastWriteTime } }
-  }
+  $m = $script:macroRx.Match("$text")
+  if ($m.Success) { return $m.Value.ToLower() } else { return $null }
 }
 
 Clear-Host
@@ -151,37 +150,11 @@ foreach ($d in $drivers) {
 }
 OK ("Running drivers scanned: " + $drivers.Count)
 
-Section 'FILESYSTEM (recent executables, non-valid flagged)'
-$since = (Get-Date).AddDays(-30)
-$dirs = @("$env:TEMP", "$env:APPDATA", "$env:LOCALAPPDATA", "$env:USERPROFILE\Downloads", "$env:ProgramData")
-$ext = '\.(exe|dll|bat|cmd|ps1|scr|jar|vbs|hta|msi|lua|ahk)$'
-$found = 0
-foreach ($dir in $dirs) {
-  Get-ChildItem -LiteralPath $dir -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -match $ext -and $_.LastWriteTime -ge $since } |
-    ForEach-Object {
-      $found++
-      if ($found -le 250) {
-        $sig = Get-Sig $_.FullName
-        if ($sig -ne 'Valid') { Warn ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName + "  [" + $sig + "]") }
-      }
-    }
-}
-OK ("Recent executables found: " + $found)
-
 Section 'PREFETCH (most recent)'
 $pf = "$env:SystemRoot\Prefetch"
 if (Test-Path -LiteralPath $pf) {
   Get-ChildItem -LiteralPath $pf -Filter *.pf | Sort-Object LastWriteTime -Descending | Select-Object -First 25 | ForEach-Object { Info ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.Name) }
 } else { Info 'Prefetch not available.' }
-
-Section 'DOWNLOADED FILES (Zone.Identifier tag)'
-$dl = 0
-Get-ChildItem -LiteralPath "$env:USERPROFILE\Downloads" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | ForEach-Object {
-  $zone = Get-Content -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
-  if ($zone) { $dl++; Info ($_.FullName) }
-}
-OK ("Downloaded (tagged) files: " + $dl)
 
 Section 'NETWORK - ESTABLISHED CONNECTIONS'
 $conns = Get-NetTCPConnection -State Established
@@ -213,13 +186,51 @@ $scanDirs = @(
   "$env:ProgramData"
 )
 
-Section 'CHEAT CLIENT SCAN (known cheat keywords)'
-$clientHits = @()
+# --- single pass over all target folders: keyword + signature + downloads ---
+$sigExt = '^\.(exe|dll|bat|cmd|ps1|scr|vbs|hta|msi)$'
+$since  = (Get-Date).AddDays(-30)
+$clientHits   = @()
+$unsignedHits = @()
+$recentFiles  = @()
+$macroFiles   = @()
+$zoneFiles    = @()
+$exeCount     = 0
+
+Write-Host ''
+Write-Host '  scanning folders (single pass)...' -ForegroundColor DarkGray
 foreach ($root in $scanDirs) {
+  if (-not (Test-Path -LiteralPath $root)) { continue }
+  Write-Host ("   - " + $root) -ForegroundColor DarkGray
   $depth = if ($root -like '*\.minecraft') { 6 } else { 3 }
-  $r = @(Scan-Dir -Root $root -Depth $depth)
-  if ($r.Count -gt 0) { $clientHits += $r }
+  $isDl  = ($root -like '*\Downloads') -or ($root -like '*\Desktop')
+  Get-ChildItem -LiteralPath $root -Recurse -Depth $depth -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $f = $_
+    $recent = $f.LastWriteTime -ge $since
+    $m = Test-Kw $f.FullName
+    if ($m) { $clientHits += [pscustomobject]@{ Path = $f.FullName; Match = $m; Modified = $f.LastWriteTime } }
+    if ($f.Extension -match $sigExt -and $recent) {
+      $exeCount++
+      if ($exeCount -le 150) {
+        $sig = Get-Sig $f.FullName
+        if ($sig -ne 'Valid') { $unsignedHits += [pscustomobject]@{ Path = $f.FullName; Sig = $sig; Modified = $f.LastWriteTime } }
+      }
+    }
+    if ($f.Extension -eq '.ahk' -or $f.Extension -eq '.ahk2') { $macroFiles += $f.FullName }
+    if ($isDl -and $recent) {
+      if ($recentFiles.Count -lt 500) { $recentFiles += $f }
+      if ($zoneFiles.Count -lt 200 -and $f.Extension -match $sigExt) {
+        $z = Get-Content -LiteralPath $f.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
+        if ($z) { $zoneFiles += $f.FullName }
+      }
+    }
+  }
 }
+
+Section 'FILESYSTEM (recent executables, non-valid flagged)'
+foreach ($h in ($unsignedHits | Sort-Object Modified -Descending)) { Warn ($h.Modified.ToString('yyyy-MM-dd HH:mm') + "  " + $h.Path + "  [" + $h.Sig + "]") }
+OK ("Recent executables checked: " + $exeCount)
+
+Section 'CHEAT CLIENT SCAN (known cheat keywords)'
 if ($clientHits.Count -gt 0) {
   foreach ($h in ($clientHits | Sort-Object Modified -Descending | Select-Object -First 200)) {
     Warn ($h.Modified.ToString('yyyy-MM-dd HH:mm') + "  " + $h.Path + "   [match: " + $h.Match + "]")
@@ -228,16 +239,15 @@ if ($clientHits.Count -gt 0) {
 } else { OK 'No known cheat-client keywords found.' }
 
 Section 'RECENTLY DOWNLOADED FILES (last 30 days)'
-$since30 = (Get-Date).AddDays(-30)
-foreach ($d in @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop")) {
-  Get-ChildItem -LiteralPath $d -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.LastWriteTime -ge $since30 } |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 60 | ForEach-Object {
-      $m = Test-Kw $_.Name
-      if ($m) { Warn ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName + "   [match: " + $m + "]") }
-      else { Info ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName) }
-    }
+foreach ($f in ($recentFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 60)) {
+  $m = Test-Kw $f.Name
+  if ($m) { Warn ($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $f.FullName + "   [match: " + $m + "]") }
+  else { Info ($f.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $f.FullName) }
 }
+
+Section 'DOWNLOADED FILES (Zone.Identifier tag)'
+foreach ($p in $zoneFiles) { Info $p }
+OK ("Downloaded (tagged) files: " + $zoneFiles.Count)
 
 Section 'RECENTLY DELETED (RECYCLE BIN)'
 $deleted = @()
@@ -314,9 +324,7 @@ Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | ForEach-Object
   $m = Test-MacroKw $_.CommandLine
   if ($m) { $macroHits++; Warn ("CMD [macro: " + $m + "] " + $_.CommandLine) }
 }
-foreach ($d in $scanDirs) {
-  Get-ChildItem -LiteralPath $d -Recurse -Depth 3 -File -Include *.ahk,*.ahk2 -ErrorAction SilentlyContinue | ForEach-Object { $macroHits++; Warn ("AHK script: " + $_.FullName) }
-}
+foreach ($p in $macroFiles) { $macroHits++; Warn ("AHK script: " + $p) }
 if ($macroHits -eq 0) { OK 'No macro / clicker software detected.' }
 
 Section 'UNKNOWN CHEAT / HACK HEURISTICS'
