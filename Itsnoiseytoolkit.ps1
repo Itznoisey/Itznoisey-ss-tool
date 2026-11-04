@@ -10,9 +10,182 @@ Add-Type -AssemblyName System.Windows.Forms
 $installDir = "$env:USERPROFILE\Downloads\ItznoiseyToolkit"
 
 # ==============================================================================
+# PC DEEPCHECK SCRIPT (runs elevated in its own window)
+# ==============================================================================
+$PCDeepCheck = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$Host.UI.RawUI.WindowTitle = 'PC DeepCheck - Itznoisey SS toolkit'
+
+$reportDir = "$env:USERPROFILE\Downloads\ItznoiseyToolkit\reports"
+try { New-Item -ItemType Directory -Path $reportDir -Force | Out-Null } catch {}
+$reportFile = Join-Path $reportDir ("DeepCheck_" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".txt")
+try { Start-Transcript -Path $reportFile -Force | Out-Null } catch {}
+
+function Section { param($t) Write-Host ''; Write-Host ('=' * 72) -ForegroundColor DarkRed; Write-Host ("  " + $t) -ForegroundColor Red; Write-Host ('=' * 72) -ForegroundColor DarkRed }
+function Sub     { param($t) Write-Host ''; Write-Host ("[" + $t + "]") -ForegroundColor Yellow }
+function Info    { param($t) Write-Host ("  " + $t) -ForegroundColor Gray }
+function OK      { param($t) Write-Host ("  [ok] " + $t) -ForegroundColor Green }
+function Warn    { param($t) Write-Host ("  [!!] " + $t) -ForegroundColor Red }
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+function Get-Sig {
+  param($Path)
+  if (-not $Path) { return 'NOPATH' }
+  if (-not (Test-Path -LiteralPath $Path)) { return 'MISSING' }
+  try { return (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString() } catch { return 'ERR' }
+}
+
+Clear-Host
+Write-Host ''
+Write-Host '  PC DEEPCHECK' -ForegroundColor Red
+Write-Host '  Itznoisey SS toolkit - deep system inspection' -ForegroundColor DarkGray
+Write-Host ("  Started: " + (Get-Date)) -ForegroundColor DarkGray
+
+Section 'SYSTEM INFORMATION'
+$os = Get-CimInstance Win32_OperatingSystem
+$cs = Get-CimInstance Win32_ComputerSystem
+Info ("Host      : " + $env:COMPUTERNAME)
+Info ("User      : " + $env:USERNAME)
+Info ("Elevated  : " + $isAdmin)
+Info ("OS        : " + $os.Caption + "  (" + $os.Version + ")")
+Info ("Arch      : " + $os.OSArchitecture)
+Info ("Uptime    : " + ((Get-Date) - $os.LastBootUpTime).ToString())
+Info ("Machine   : " + $cs.Manufacturer + " " + $cs.Model)
+try { $mp = Get-MpComputerStatus; Info ("Defender  : RealTime=" + $mp.RealTimeProtectionEnabled + " AV=" + $mp.AntivirusEnabled + " Tamper=" + $mp.IsTamperProtected + " SigAge=" + $mp.AntivirusSignatureAge + "d") } catch { Info "Defender  : n/a" }
+try { Info ("SecureBoot: " + (Confirm-SecureBootUEFI)) } catch { Info "SecureBoot: n/a" }
+
+Section 'RUNNING PROCESSES (non-valid signatures flagged)'
+$procs = Get-Process
+foreach ($p in $procs) {
+  $path = $null
+  try { $path = $p.Path } catch {}
+  if ($path) {
+    $sig = Get-Sig $path
+    if ($sig -ne 'Valid') { Warn (("{0,-28} PID {1,-6} {2}  [{3}]" -f $p.ProcessName, $p.Id, $path, $sig)) }
+  } else {
+    Warn (("{0,-28} PID {1,-6} <no path / protected>" -f $p.ProcessName, $p.Id))
+  }
+}
+OK ("Processes scanned: " + $procs.Count)
+
+Section 'AUTORUNS'
+$runKeys = @(
+ 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+ 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+ 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+ 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+ 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run',
+ 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce'
+)
+foreach ($k in $runKeys) {
+  $props = Get-ItemProperty -Path $k
+  if ($props) {
+    foreach ($pr in $props.PSObject.Properties) {
+      if ($pr.Name -notlike 'PS*') { Info ($k + "  |  " + $pr.Name + " = " + $pr.Value) }
+    }
+  }
+}
+Sub 'Startup folders'
+foreach ($d in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup")) {
+  Get-ChildItem -LiteralPath $d -Force | ForEach-Object { Info ($_.FullName) }
+}
+Sub 'Winlogon / AppInit'
+$wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Info ("Shell    : " + $wl.Shell)
+Info ("Userinit : " + $wl.Userinit)
+$ai = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows'
+Info ("AppInit  : " + $ai.AppInit_DLLs)
+Sub 'Image File Execution Options (debuggers)'
+Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' | ForEach-Object {
+  $dbg = (Get-ItemProperty $_.PSPath).Debugger
+  if ($dbg) { Warn ($_.PSChildName + " -> " + $dbg) }
+}
+
+Section 'KERNEL DRIVERS (running, non-valid flagged)'
+$drivers = Get-CimInstance Win32_SystemDriver | Where-Object { $_.State -eq 'Running' }
+foreach ($d in $drivers) {
+  $sig = Get-Sig $d.PathName
+  if ($sig -ne 'Valid') { Warn (("{0,-26} {1}  [{2}]" -f $d.Name, $d.PathName, $sig)) }
+}
+OK ("Running drivers scanned: " + $drivers.Count)
+
+Section 'FILESYSTEM (recent executables, non-valid flagged)'
+$since = (Get-Date).AddDays(-30)
+$dirs = @("$env:TEMP", "$env:APPDATA", "$env:LOCALAPPDATA", "$env:USERPROFILE\Downloads", "$env:ProgramData")
+$ext = '\.(exe|dll|bat|cmd|ps1|scr|jar|vbs|hta|msi)$'
+$found = 0
+foreach ($dir in $dirs) {
+  Get-ChildItem -LiteralPath $dir -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -match $ext -and $_.LastWriteTime -ge $since } |
+    ForEach-Object {
+      $found++
+      if ($found -le 250) {
+        $sig = Get-Sig $_.FullName
+        if ($sig -ne 'Valid') { Warn ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName + "  [" + $sig + "]") }
+      }
+    }
+}
+OK ("Recent executables found: " + $found)
+
+Section 'PREFETCH (most recent)'
+$pf = "$env:SystemRoot\Prefetch"
+if (Test-Path -LiteralPath $pf) {
+  Get-ChildItem -LiteralPath $pf -Filter *.pf | Sort-Object LastWriteTime -Descending | Select-Object -First 25 | ForEach-Object { Info ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.Name) }
+} else { Info 'Prefetch not available.' }
+
+Section 'DOWNLOADED FILES (Zone.Identifier tag)'
+$dl = 0
+Get-ChildItem -LiteralPath "$env:USERPROFILE\Downloads" -Recurse -Depth 2 -File -ErrorAction SilentlyContinue | ForEach-Object {
+  $zone = Get-Content -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue
+  if ($zone) { $dl++; Info ($_.FullName) }
+}
+OK ("Downloaded (tagged) files: " + $dl)
+
+Section 'NETWORK - ESTABLISHED CONNECTIONS'
+$conns = Get-NetTCPConnection -State Established
+foreach ($c in ($conns | Select-Object -First 80)) {
+  $pn = (Get-Process -Id $c.OwningProcess).ProcessName
+  Info (("{0}:{1}  ->  {2}:{3}  {4}" -f $c.LocalAddress, $c.LocalPort, $c.RemoteAddress, $c.RemotePort, $pn))
+}
+OK ("Established connections: " + $conns.Count)
+
+Section 'NETWORK - LISTENING PORTS'
+Get-NetTCPConnection -State Listen | Sort-Object LocalPort -Unique | ForEach-Object {
+  $pn = (Get-Process -Id $_.OwningProcess).ProcessName
+  Info (("{0}:{1}  {2}" -f $_.LocalAddress, $_.LocalPort, $pn))
+}
+
+Section 'NETWORK - DNS CACHE (non-local)'
+$dns = Get-DnsClientCache | Where-Object { $_.Entry -notmatch '^(localhost|.*\.local)$' }
+Info ("Cached entries: " + $dns.Count)
+foreach ($e in ($dns | Select-Object -First 40)) { Info ("  " + $e.Entry) }
+
+Section 'SUSPICIOUS FILE NAMES (Downloads / Desktop)'
+$kw = 'cheat|hack|inject|bypass|spoof|macro|autoclick|clicker|xray|ghost|novo|doomsday|dqrkis|faker|loader|synapse'
+$hits = 0
+foreach ($d in @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop")) {
+  Get-ChildItem -LiteralPath $d -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match $kw } |
+    ForEach-Object { $hits++; Warn ($_.FullName) }
+}
+if ($hits -eq 0) { OK 'No suspicious-named files found.' }
+
+Section 'SUMMARY'
+Info ("Finished : " + (Get-Date))
+Info ("Elevated : " + $isAdmin)
+Info ("Report   : " + $reportFile)
+Write-Host ''
+Write-Host '  DeepCheck complete. Press any key to close.' -ForegroundColor Red
+try { Stop-Transcript | Out-Null } catch {}
+try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch {}
+'@
+
+# ==============================================================================
 # TOOL DATA
 # ==============================================================================
 $ToolData = @(
+    @{ Name="PC DeepCheck";          Desc="Deep system inspection: processes, autoruns, drivers, files, network"; Category="DeepCheck"; Type="Cmd"; Command=$PCDeepCheck },
     @{ Name="PrefetchView";          Desc="Parses prefetch, extracts file info";          Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/PrefetchView/releases/latest" },
     @{ Name="BAMReveal";             Desc="Parses BAM forensic artefact";                 Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/BAMReveal/releases/latest" },
     @{ Name="StringsParser";         Desc="Strings + YARA + signatures scanner";          Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/StringsParser/releases/latest" },
@@ -725,7 +898,7 @@ function Invoke-ToolAction {
 # ==============================================================================
 # GENERATE TOOL CARDS
 # ==============================================================================
-$Categories = @("Orbdiff","Spokwn","Tonynoh","Praiselily","RedLotus","Zimmerman","NirSoft","Dependencies","Others","Community","External")
+$Categories = @("DeepCheck","Orbdiff","Spokwn","Tonynoh","Praiselily","RedLotus","Zimmerman","NirSoft","Dependencies","Others","Community","External")
 
 foreach ($cat in $Categories) {
     $tab = New-Object System.Windows.Controls.TabItem
