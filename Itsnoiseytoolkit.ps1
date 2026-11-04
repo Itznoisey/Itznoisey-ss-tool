@@ -250,34 +250,44 @@ foreach ($p in $zoneFiles) { Info $p }
 OK ("Downloaded (tagged) files: " + $zoneFiles.Count)
 
 Section 'RECENTLY DELETED (RECYCLE BIN)'
-$deleted = @()
-foreach ($drive in (Get-PSDrive -PSProvider FileSystem).Root) {
-  $rb = Join-Path $drive '$Recycle.Bin'
-  Get-ChildItem -LiteralPath $rb -Force -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-    Get-ChildItem -LiteralPath $_.FullName -Force -File -Filter '$I*' -ErrorAction SilentlyContinue | ForEach-Object {
-      try {
-        $b = [System.IO.File]::ReadAllBytes($_.FullName)
-        if ($b.Length -gt 28) {
-          $ver = [BitConverter]::ToInt64($b, 0)
-          if ($ver -ge 2) {
-            $del = [DateTime]::FromFileTime([BitConverter]::ToInt64($b, 16))
-            $len = [BitConverter]::ToInt32($b, 24)
-            if ($len -gt 0) {
-              $orig = [System.Text.Encoding]::Unicode.GetString($b, 28, [Math]::Min($len * 2, $b.Length - 28))
-              $deleted += [pscustomobject]@{ Deleted = $del; Original = $orig }
-            }
-          }
-        }
-      } catch {}
+$localDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DeviceID)
+OK ("Local drives: " + ($localDrives -join ', '))
+$iList = @()
+foreach ($d in $localDrives) {
+  $rb = $d + '\$Recycle.Bin'
+  Write-Host ("   - " + $rb) -ForegroundColor DarkGray
+  $iList = @(
+    $iList
+    foreach ($sid in (Get-ChildItem -LiteralPath $rb -Force -Directory -ErrorAction SilentlyContinue)) {
+      Get-ChildItem -LiteralPath $sid.FullName -Force -File -Filter '$I*' -ErrorAction SilentlyContinue
     }
-  }
+  )
 }
-$deleted = $deleted | Sort-Object Deleted -Descending
-OK ("Deleted items found: " + $deleted.Count)
+$cap = 2000
+OK ("Recycle bin entries: " + $iList.Count + "  (reading newest " + ([Math]::Min($cap, $iList.Count)) + ")")
+$deleted = [System.Collections.Generic.List[object]]::new()
+foreach ($i in ($iList | Sort-Object LastWriteTime -Descending | Select-Object -First $cap)) {
+  try {
+    $b = [System.IO.File]::ReadAllBytes($i.FullName)
+    if ($b.Length -gt 28) {
+      $ver = [BitConverter]::ToInt64($b, 0)
+      if ($ver -ge 2) {
+        $del = [DateTime]::FromFileTime([BitConverter]::ToInt64($b, 16))
+        $len = [BitConverter]::ToInt32($b, 24)
+        if ($len -gt 0) {
+          $orig = [System.Text.Encoding]::Unicode.GetString($b, 28, [Math]::Min($len * 2, $b.Length - 28))
+          $deleted.Add([pscustomobject]@{ Deleted = $del; Original = $orig })
+        }
+      }
+    }
+  } catch {}
+}
+$deleted = @($deleted | Sort-Object Deleted -Descending)
+OK ("Deleted items parsed: " + $deleted.Count)
 foreach ($x in ($deleted | Select-Object -First 300)) {
   $m = Test-Kw $x.Original
   if ($m) { Warn ($x.Deleted.ToString('yyyy-MM-dd HH:mm') + "  " + $x.Original + "   [match: " + $m + "]") }
-  elseif ($x.Deleted -ge $since30) { Info ($x.Deleted.ToString('yyyy-MM-dd HH:mm') + "  " + $x.Original) }
+  elseif ($x.Deleted -ge $since) { Info ($x.Deleted.ToString('yyyy-MM-dd HH:mm') + "  " + $x.Original) }
 }
 
 Section 'JAVA / INJECTION CHECK'
