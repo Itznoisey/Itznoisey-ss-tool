@@ -36,6 +36,47 @@ function Get-Sig {
   try { return (Get-AuthenticodeSignature -LiteralPath $Path).Status.ToString() } catch { return 'ERR' }
 }
 
+# --- keyword databases (lower-case, matched case-insensitively) ---
+$cheatKeywords = @(
+  'prestige','meteor','wurst','impact','future','konas','salhack','lambda','rusherhack','kurium',
+  'seppuku','phobos','gamesense','astolfo','hylex','kamiblue','entropy','novoline','novoware','novo',
+  'tenacity','remix','exhibition','huzuni','aristois','inertia','bleachhack','zeroday','zero-day',
+  'doomsday','dqrkis','marlow','iseven','themis','mystic','lithium','sapphire','phantom','vape',
+  'whiteout','blackout','bidoof','sigma','fdpclient','rift','liquidbounce','krypton','opal','pengu',
+  'crypt','ambition','chroma','spectre','nightx','enigma','nuker','killaura','aimbot','antiknockback',
+  'antikb','autoclicker','auto-clicker','auto clicker','clicker','javaagent','xray','cheat client',
+  'hacked client','hack client','injector','inject','bypass','spoof','synapse','macro'
+)
+$macroKeywords = @(
+  'autohotkey','auto hotkey','autoit','gs auto clicker','gs autoclicker','op auto clicker','tinytask',
+  'macro recorder','murgee','free mouse auto clicker','high precision auto clicker','x-mouse button',
+  'xmouse','razer synapse','logitech g hub','ghub','corsair icue','icue','clickermann','keypresser',
+  'key presser','autofire','auto fire','rapid fire','double clicker','autoclicker','auto clicker','macro'
+)
+
+function Test-Kw {
+  param($text)
+  if (-not $text) { return $null }
+  $t = ("$text").ToLower()
+  foreach ($k in $cheatKeywords) { if ($t.Contains($k)) { return $k } }
+  return $null
+}
+function Test-MacroKw {
+  param($text)
+  if (-not $text) { return $null }
+  $t = ("$text").ToLower()
+  foreach ($k in $macroKeywords) { if ($t.Contains($k)) { return $k } }
+  return $null
+}
+function Scan-Dir {
+  param($Root, [int]$Depth = 3)
+  if (-not (Test-Path -LiteralPath $Root)) { return }
+  Get-ChildItem -LiteralPath $Root -Recurse -Depth $Depth -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $m = Test-Kw $_.FullName
+    if ($m) { [pscustomobject]@{ Path = $_.FullName; Match = $m; Modified = $_.LastWriteTime } }
+  }
+}
+
 Clear-Host
 Write-Host ''
 Write-Host '  PC DEEPCHECK' -ForegroundColor Red
@@ -113,7 +154,7 @@ OK ("Running drivers scanned: " + $drivers.Count)
 Section 'FILESYSTEM (recent executables, non-valid flagged)'
 $since = (Get-Date).AddDays(-30)
 $dirs = @("$env:TEMP", "$env:APPDATA", "$env:LOCALAPPDATA", "$env:USERPROFILE\Downloads", "$env:ProgramData")
-$ext = '\.(exe|dll|bat|cmd|ps1|scr|jar|vbs|hta|msi)$'
+$ext = '\.(exe|dll|bat|cmd|ps1|scr|jar|vbs|hta|msi|lua|ahk)$'
 $found = 0
 foreach ($dir in $dirs) {
   Get-ChildItem -LiteralPath $dir -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
@@ -161,15 +202,139 @@ $dns = Get-DnsClientCache | Where-Object { $_.Entry -notmatch '^(localhost|.*\.l
 Info ("Cached entries: " + $dns.Count)
 foreach ($e in ($dns | Select-Object -First 40)) { Info ("  " + $e.Entry) }
 
-Section 'SUSPICIOUS FILE NAMES (Downloads / Desktop)'
-$kw = 'cheat|hack|inject|bypass|spoof|macro|autoclick|clicker|xray|ghost|novo|doomsday|dqrkis|faker|loader|synapse'
-$hits = 0
+$scanDirs = @(
+  "$env:USERPROFILE\Downloads",
+  "$env:USERPROFILE\Desktop",
+  "$env:USERPROFILE\Documents",
+  "$env:APPDATA\.minecraft",
+  "$env:TEMP",
+  "$env:APPDATA",
+  "$env:LOCALAPPDATA",
+  "$env:ProgramData"
+)
+
+Section 'CHEAT CLIENT SCAN (known cheat keywords)'
+$clientHits = @()
+foreach ($root in $scanDirs) {
+  $depth = if ($root -like '*\.minecraft') { 6 } else { 3 }
+  $r = @(Scan-Dir -Root $root -Depth $depth)
+  if ($r.Count -gt 0) { $clientHits += $r }
+}
+if ($clientHits.Count -gt 0) {
+  foreach ($h in ($clientHits | Sort-Object Modified -Descending | Select-Object -First 200)) {
+    Warn ($h.Modified.ToString('yyyy-MM-dd HH:mm') + "  " + $h.Path + "   [match: " + $h.Match + "]")
+  }
+  OK ("Cheat-keyword hits: " + $clientHits.Count)
+} else { OK 'No known cheat-client keywords found.' }
+
+Section 'RECENTLY DOWNLOADED FILES (last 30 days)'
+$since30 = (Get-Date).AddDays(-30)
 foreach ($d in @("$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop")) {
   Get-ChildItem -LiteralPath $d -Recurse -Depth 3 -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match $kw } |
-    ForEach-Object { $hits++; Warn ($_.FullName) }
+    Where-Object { $_.LastWriteTime -ge $since30 } |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 60 | ForEach-Object {
+      $m = Test-Kw $_.Name
+      if ($m) { Warn ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName + "   [match: " + $m + "]") }
+      else { Info ($_.LastWriteTime.ToString('yyyy-MM-dd HH:mm') + "  " + $_.FullName) }
+    }
 }
-if ($hits -eq 0) { OK 'No suspicious-named files found.' }
+
+Section 'RECENTLY DELETED (RECYCLE BIN)'
+$deleted = @()
+foreach ($drive in (Get-PSDrive -PSProvider FileSystem).Root) {
+  $rb = Join-Path $drive '$Recycle.Bin'
+  Get-ChildItem -LiteralPath $rb -Force -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    Get-ChildItem -LiteralPath $_.FullName -Force -File -Filter '$I*' -ErrorAction SilentlyContinue | ForEach-Object {
+      try {
+        $b = [System.IO.File]::ReadAllBytes($_.FullName)
+        if ($b.Length -gt 28) {
+          $ver = [BitConverter]::ToInt64($b, 0)
+          if ($ver -ge 2) {
+            $del = [DateTime]::FromFileTime([BitConverter]::ToInt64($b, 16))
+            $len = [BitConverter]::ToInt32($b, 24)
+            if ($len -gt 0) {
+              $orig = [System.Text.Encoding]::Unicode.GetString($b, 28, [Math]::Min($len * 2, $b.Length - 28))
+              $deleted += [pscustomobject]@{ Deleted = $del; Original = $orig }
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+}
+$deleted = $deleted | Sort-Object Deleted -Descending
+OK ("Deleted items found: " + $deleted.Count)
+foreach ($x in ($deleted | Select-Object -First 300)) {
+  $m = Test-Kw $x.Original
+  if ($m) { Warn ($x.Deleted.ToString('yyyy-MM-dd HH:mm') + "  " + $x.Original + "   [match: " + $m + "]") }
+  elseif ($x.Deleted -ge $since30) { Info ($x.Deleted.ToString('yyyy-MM-dd HH:mm') + "  " + $x.Original) }
+}
+
+Section 'JAVA / INJECTION CHECK'
+$java = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^javaw?\.exe$' -or $_.CommandLine -match 'minecraft|javaagent' }
+if ($java) {
+  foreach ($j in $java) {
+    if ($j.CommandLine -match '-javaagent') { Warn ("javaagent detected: " + $j.CommandLine) }
+    $m = Test-Kw $j.CommandLine
+    if ($m) { Warn ("Java process [match: " + $m + "]: " + $j.CommandLine) }
+    else { Info ("Java: " + $j.CommandLine) }
+  }
+} else { Info 'No Java / Minecraft processes running.' }
+Sub 'Non-system modules loaded by Minecraft/Java processes'
+Get-Process | Where-Object { $_.Name -match 'java|minecraft' } | ForEach-Object {
+  $pn = $_.ProcessName
+  foreach ($mod in $_.Modules) {
+    if ($mod.FileName -and ($mod.FileName -notmatch [regex]::Escape($env:SystemRoot))) {
+      $sig = Get-Sig $mod.FileName
+      $m = Test-Kw $mod.FileName
+      if ($m -or $sig -ne 'Valid') { Warn ($pn + "  " + $mod.FileName + "  [" + $sig + "]") }
+    }
+  }
+}
+
+Section 'INSTALLED PROGRAMS SCAN'
+$apps = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName }
+OK ("Installed programs: " + $apps.Count)
+foreach ($a in $apps) {
+  $m = Test-Kw $a.DisplayName
+  $mm = Test-MacroKw $a.DisplayName
+  if ($m) { Warn ("APP [cheat: " + $m + "] " + $a.DisplayName + "  " + $a.InstallLocation) }
+  elseif ($mm) { Warn ("APP [macro: " + $mm + "] " + $a.DisplayName + "  " + $a.InstallLocation) }
+}
+
+Section 'MACRO / CLICKER CHECK'
+$macroHits = 0
+foreach ($p in Get-Process) {
+  $path = $null; try { $path = $p.Path } catch {}
+  $m = Test-MacroKw $p.ProcessName
+  if (-not $m) { $m = Test-MacroKw $path }
+  if ($m) { $macroHits++; Warn ("PROC [macro: " + $m + "] " + $p.ProcessName + "  " + $path) }
+}
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine } | ForEach-Object {
+  $m = Test-MacroKw $_.CommandLine
+  if ($m) { $macroHits++; Warn ("CMD [macro: " + $m + "] " + $_.CommandLine) }
+}
+foreach ($d in $scanDirs) {
+  Get-ChildItem -LiteralPath $d -Recurse -Depth 3 -File -Include *.ahk,*.ahk2 -ErrorAction SilentlyContinue | ForEach-Object { $macroHits++; Warn ("AHK script: " + $_.FullName) }
+}
+if ($macroHits -eq 0) { OK 'No macro / clicker software detected.' }
+
+Section 'UNKNOWN CHEAT / HACK HEURISTICS'
+$mc = "$env:APPDATA\.minecraft"
+if (Test-Path -LiteralPath $mc) {
+  Sub '.minecraft\mods contents'
+  Get-ChildItem -LiteralPath "$mc\mods" -File -ErrorAction SilentlyContinue | ForEach-Object { Info ($_.LastWriteTime.ToString('yyyy-MM-dd') + "  " + $_.Name) }
+  Sub 'Recent .jar files in .minecraft (last 60 days)'
+  Get-ChildItem -LiteralPath $mc -Recurse -Depth 4 -File -Include *.jar -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -ge (Get-Date).AddDays(-60) } |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 50 | ForEach-Object {
+      $m = Test-Kw $_.Name
+      if ($m) { Warn ($_.LastWriteTime.ToString('yyyy-MM-dd') + "  " + $_.FullName + "   [match: " + $m + "]") }
+      else { Info ($_.LastWriteTime.ToString('yyyy-MM-dd') + "  " + $_.FullName) }
+    }
+  Sub 'Non-standard files in .minecraft root'
+  Get-ChildItem -LiteralPath $mc -File -ErrorAction SilentlyContinue | ForEach-Object { Info ($_.Name) }
+} else { Info '.minecraft folder not found.' }
 
 Section 'SUMMARY'
 Info ("Finished : " + (Get-Date))
