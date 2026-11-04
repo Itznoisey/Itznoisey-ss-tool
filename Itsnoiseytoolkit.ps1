@@ -185,7 +185,7 @@ try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch {}
 # TOOL DATA
 # ==============================================================================
 $ToolData = @(
-    @{ Name="PC DeepCheck";          Desc="Deep system inspection: processes, autoruns, drivers, files, network"; Category="DeepCheck"; Type="Cmd"; Command=$PCDeepCheck },
+    @{ Name="PC DeepCheck";          Desc="Deep system inspection: processes, autoruns, drivers, files, network"; Category="Community";  Type="Cmd"; Command=$PCDeepCheck },
     @{ Name="PrefetchView";          Desc="Parses prefetch, extracts file info";          Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/PrefetchView/releases/latest" },
     @{ Name="BAMReveal";             Desc="Parses BAM forensic artefact";                 Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/BAMReveal/releases/latest" },
     @{ Name="StringsParser";         Desc="Strings + YARA + signatures scanner";          Category="Orbdiff";    Type="GitHub"; URL="https://github.com/Orbdiff/StringsParser/releases/latest" },
@@ -898,7 +898,7 @@ function Invoke-ToolAction {
 # ==============================================================================
 # GENERATE TOOL CARDS
 # ==============================================================================
-$Categories = @("DeepCheck","Orbdiff","Spokwn","Tonynoh","Praiselily","RedLotus","Zimmerman","NirSoft","Dependencies","Others","Community","External")
+$Categories = @("Orbdiff","Spokwn","Tonynoh","Praiselily","RedLotus","Zimmerman","NirSoft","Dependencies","Others","Community","External")
 
 foreach ($cat in $Categories) {
     $tab = New-Object System.Windows.Controls.TabItem
