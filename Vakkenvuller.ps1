@@ -7,16 +7,16 @@ Add-Type -AssemblyName System.Windows.Forms
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$installDir = "$env:USERPROFILE\Downloads\ItznoiseyToolkit"
+$installDir = "$env:USERPROFILE\Downloads\vakkenvuller23Toolkit"
 
 # ==============================================================================
 # PC DEEPCHECK SCRIPT (runs elevated in its own window)
 # ==============================================================================
 $PCDeepCheck = @'
 $ErrorActionPreference = 'SilentlyContinue'
-$Host.UI.RawUI.WindowTitle = 'PC DeepCheck - Itznoisey SS toolkit'
+$Host.UI.RawUI.WindowTitle = 'PC DeepCheck - itznoisey toolkit'
 
-$reportDir = "$env:USERPROFILE\Downloads\ItznoiseyToolkit\reports"
+$reportDir = "$env:USERPROFILE\Downloads\vakkenvuller23Toolkit\reports"
 try { New-Item -ItemType Directory -Path $reportDir -Force | Out-Null } catch {}
 $reportFile = Join-Path $reportDir ("DeepCheck_" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".txt")
 try { Start-Transcript -Path $reportFile -Force | Out-Null } catch {}
@@ -733,10 +733,10 @@ function Start-AppOrScript {
 function Start-CmdToolCommand {
     param([Parameter(Mandatory=$true)][string]$Command)
 
-    $tempScript = [System.IO.Path]::Combine($env:TEMP, "itznoisey_$([guid]::NewGuid().ToString('N')).ps1")
+    $tempScript = [System.IO.Path]::Combine($env:TEMP, "vakkenvuller23_$([guid]::NewGuid().ToString('N')).ps1")
     Set-Content -LiteralPath $tempScript -Value $Command -Encoding UTF8 -Force
 
-    $startArgs = '/c start "Itznoisey SS toolkit" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "' + $tempScript + '"'
+    $startArgs = '/c start "vakkenvuller23 SS toolkit" powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "' + $tempScript + '"'
     Start-Process -FilePath "cmd.exe" -ArgumentList $startArgs -WindowStyle Hidden -Verb RunAs
 }
 
@@ -750,7 +750,7 @@ function Save-UrlToFile {
     if (Test-Path -LiteralPath $tempFile) { Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue }
 
     $client = New-Object System.Net.WebClient
-    $client.Headers.Add("User-Agent", "ItznoiseySSToolkit")
+    $client.Headers.Add("User-Agent", "vakkenvuller23SSToolkit")
     try {
         $client.DownloadFile($Uri, $tempFile)
         if (Test-Path -LiteralPath $OutFile) { Remove-Item -LiteralPath $OutFile -Force -ErrorAction Stop }
@@ -798,7 +798,7 @@ function Get-GitHubAssetUrl {
         $repo = $Matches[2]
         $api  = "https://api.github.com/repos/$user/$repo/releases/latest"
         try {
-            $rel   = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="ItznoiseySSToolkit"} -ErrorAction Stop
+            $rel   = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="vakkenvuller23SSToolkit"} -ErrorAction Stop
             $asset = $rel.assets | Where-Object { $_.name -match "\.(exe|zip|cmd|bat)$" } | Select-Object -First 1
             if ($asset) { return @{ url=$asset.browser_download_url; name=$asset.name } }
         } catch {
@@ -812,7 +812,7 @@ function Get-GitHubAssetUrl {
         $tag = [Uri]::EscapeDataString(([Uri]::UnescapeDataString($Matches[3])).TrimEnd("/"))
         $api  = "https://api.github.com/repos/$user/$repo/releases/tags/$tag"
         try {
-            $rel   = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="ItznoiseySSToolkit"} -ErrorAction Stop
+            $rel   = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="vakkenvuller23SSToolkit"} -ErrorAction Stop
             $asset = $rel.assets | Where-Object { $_.name -match "\.(exe|zip|cmd|bat)$" } | Select-Object -First 1
             if ($asset) { return @{ url=$asset.browser_download_url; name=$asset.name } }
         } catch {
@@ -988,7 +988,7 @@ function Invoke-ToolAction {
                 $repo = $Matches[2]
                 $api = "https://api.github.com/repos/$user/$repo/releases/latest"
                 try {
-                    $rel = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="ItznoiseySSToolkit"} -ErrorAction Stop
+                    $rel = Invoke-RestMethod -Uri $api -Headers @{"User-Agent"="vakkenvuller23SSToolkit"} -ErrorAction Stop
                     $asset = $rel.assets | Where-Object { $_.name -match "\.(exe|zip|cmd|bat)$" } | Select-Object -First 1
                     if ($asset) { return @{ url=$asset.browser_download_url; name=$asset.name } }
                 } catch {
